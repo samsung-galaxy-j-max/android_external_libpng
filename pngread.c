@@ -2,7 +2,7 @@
 /* pngread.c - read a PNG file
  *
  * Last changed in libpng 1.6.17 [March 26, 2015]
- * Copyright (c) 1998-2015 Glenn Randers-Pehrson
+ * Copyright (c) 1998-2002,2004,2006-2015 Glenn Randers-Pehrson
  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
  *
@@ -73,10 +73,6 @@ png_create_read_struct_2,(png_const_charp user_png_ver, png_voidp error_ptr,
        * required.
        */
       png_set_read_fn(png_ptr, NULL, NULL);
-
-#ifdef PNG_INDEX_SUPPORTED
-      png_ptr->index = NULL;
-#endif
    }
 
    return png_ptr;
@@ -266,11 +262,6 @@ png_read_update_info(png_structrp png_ptr, png_inforp info_ptr)
 
    if (png_ptr != NULL)
    {
-#ifdef PNG_INDEX_SUPPORTED
-      if (png_ptr->index) {
-         png_read_start_row(png_ptr);
-      }
-#endif
       if ((png_ptr->flags & PNG_FLAG_ROW_INIT) == 0)
       {
          png_read_start_row(png_ptr);
@@ -281,12 +272,11 @@ png_read_update_info(png_structrp png_ptr, png_inforp info_ptr)
             PNG_UNUSED(info_ptr)
 #        endif
       }
-#ifndef PNG_INDEX_SUPPORTED
+
       /* New in 1.6.0 this avoids the bug of doing the initializations twice */
       else
          png_app_error(png_ptr,
             "png_read_update_info/png_start_read_image: duplicate call");
-#endif
    }
 }
 
@@ -684,148 +674,6 @@ png_read_rows(png_structrp png_ptr, png_bytepp row,
 }
 #endif /* SEQUENTIAL_READ */
 
-#ifdef PNG_INDEX_SUPPORTED
-#define IDAT_HEADER_SIZE 8
-
-/* Set the png read position to a new position based on idat_position and
- * offset.
- */
-void
-png_set_read_offset(png_structp png_ptr,
-      png_uint_32 idat_position, png_uint_32 bytes_left)
-{
-   png_seek_data(png_ptr, idat_position);
-   png_ptr->idat_size = png_read_chunk_header(png_ptr);
-
-   // We need to add back IDAT_HEADER_SIZE because in zlib's perspective,
-   // IDAT_HEADER in PNG is already stripped out.
-   png_seek_data(png_ptr, idat_position + IDAT_HEADER_SIZE + png_ptr->idat_size - bytes_left);
-   png_ptr->idat_size = bytes_left;
-}
-
-/* Configure png decoder to decode the pass starting from *row.
- * The requested row may be adjusted to align with an indexing row.
- * The actual row for the decoder to start its decoding will be returned in
- * *row.
- */
-void PNGAPI
-png_configure_decoder(png_structp png_ptr, int *row, int pass)
-{
-   png_indexp index = png_ptr->index;
-   int n = *row / index->step[pass];
-   png_line_indexp line_index = index->pass_line_index[pass][n];
-
-   // Adjust row to an indexing row.
-   *row = n * index->step[pass];
-   png_ptr->row_number = *row;
-
-#ifdef PNG_READ_INTERLACING_SUPPORTED
-   if (png_ptr->interlaced)
-      png_set_interlaced_pass(png_ptr, pass);
-#endif
-
-   long row_byte_length =
-      PNG_ROWBYTES(png_ptr->pixel_depth, png_ptr->iwidth) + 1;
-
-   inflateEnd(&png_ptr->zstream);
-   inflateCopy(&png_ptr->zstream, line_index->z_state);
-
-   // Set the png read position to line_index.
-   png_set_read_offset(png_ptr, line_index->stream_idat_position,
-         line_index->bytes_left_in_idat);
-   memcpy(png_ptr->prev_row, line_index->prev_row, row_byte_length);
-   png_ptr->zstream.avail_in = 0;
-}
-
-/* Build the line index and store the index in png_ptr->index.
- */
-void PNGAPI
-png_build_index(png_structp png_ptr)
-{
-   // number of rows in a 8x8 block for each interlaced pass.
-   int number_rows_in_pass[7] = {1, 1, 1, 2, 2, 4, 4};
-
-   int ret;
-   png_uint_32 i, j;
-   png_bytep rp;
-   int p, pass_number = 1;
-
-#ifdef PNG_READ_INTERLACING_SUPPORTED
-   pass_number = png_set_interlace_handling(png_ptr);
-#endif
-
-   if (png_ptr == NULL)
-      return;
-
-   png_read_start_row(png_ptr);
-
-#ifdef PNG_READ_INTERLACING_SUPPORTED
-   if (!png_ptr->interlaced)
-#endif
-   {
-      number_rows_in_pass[0] = 8;
-   }
-
-   // Allocate a buffer big enough for any transform.
-   rp = png_malloc(png_ptr, PNG_ROWBYTES(png_ptr->maximum_pixel_depth, png_ptr->width));
-
-   png_indexp index = png_malloc(png_ptr, sizeof(png_index));
-   png_ptr->index = index;
-
-   index->stream_idat_position = png_ptr->total_data_read - IDAT_HEADER_SIZE;
-
-   // Set the default size of index in each pass to 0,
-   // so that we can free index correctly in png_destroy_read_struct.
-   for (p = 0; p < 7; p++)
-      index->size[p] = 0;
-
-   for (p = 0; p < pass_number; p++)
-   {
-      // We adjust the index step in each pass to make sure each pass
-      // has roughly the same size of index.
-      // This way, we won't consume to much memory in recording index.
-      index->step[p] = INDEX_SAMPLE_SIZE * (8 / number_rows_in_pass[p]);
-      const png_uint_32 temp_size =
-         (png_ptr->height + index->step[p] - 1) / index->step[p];
-      index->pass_line_index[p] =
-         png_malloc(png_ptr, temp_size * sizeof(png_line_indexp));
-
-      // Get the row_byte_length seen by the filter. This value may be
-      // different from the row_byte_length of a bitmap in the case of
-      // color palette mode.
-      int row_byte_length =
-         PNG_ROWBYTES(png_ptr->pixel_depth, png_ptr->iwidth) + 1;
-
-      // Now, we record index for each indexing row.
-      for (i = 0; i < temp_size; i++)
-      {
-         png_line_indexp line_index = png_malloc(png_ptr, sizeof(png_line_index));
-         index->pass_line_index[p][i] = line_index;
-
-         line_index->z_state = png_malloc(png_ptr, sizeof(z_stream));
-         inflateCopy(line_index->z_state, &png_ptr->zstream);
-         line_index->prev_row = png_malloc(png_ptr, row_byte_length);
-         memcpy(line_index->prev_row, png_ptr->prev_row, row_byte_length);
-         line_index->stream_idat_position = index->stream_idat_position;
-         line_index->bytes_left_in_idat = png_ptr->idat_size + png_ptr->zstream.avail_in;
-
-         // increment the size now that we have the backing data structures.
-         // This prevents a crash in the event that png_read_row fails and
-         // we need to cleanup the partially constructed png_index_struct;
-         index->size[p] += 1;
-
-         // Skip the "step" number of rows to the next indexing row.
-         for (j = 0; j < index->step[p] &&
-               i * index->step[p] + j < png_ptr->height; j++)
-         {
-            png_read_row(png_ptr, rp, NULL);
-         }
-      }
-   }
-   png_free(png_ptr, rp);
-}
-#endif
-
 #ifdef PNG_SEQUENTIAL_READ_SUPPORTED
 /* Read the entire image.  If the image has an alpha channel or a tRNS
  * chunk, and you have called png_handle_alpha()[*], you will need to
@@ -1123,25 +971,6 @@ png_read_destroy(png_structrp png_ptr)
 #ifdef PNG_SET_UNKNOWN_CHUNKS_SUPPORTED
    png_free(png_ptr, png_ptr->chunk_list);
    png_ptr->chunk_list = NULL;
-#endif
-
-#ifdef PNG_INDEX_SUPPORTED
-   if (png_ptr->index) {
-      unsigned int i, p;
-      png_indexp index = png_ptr->index;
-      for (p = 0; p < 7; p++) {
-         for (i = 0; i < index->size[p]; i++) {
-            inflateEnd(index->pass_line_index[p][i]->z_state);
-            png_free(png_ptr, index->pass_line_index[p][i]->z_state);
-            png_free(png_ptr, index->pass_line_index[p][i]->prev_row);
-            png_free(png_ptr, index->pass_line_index[p][i]);
-         }
-         if (index->size[p] != 0) {
-            png_free(png_ptr, index->pass_line_index[p]);
-         }
-      }
-      png_free(png_ptr, index);
-   }
 #endif
 
    /* NOTE: the 'setjmp' buffer may still be allocated and the memory and error
@@ -4242,58 +4071,84 @@ png_image_finish_read(png_imagep image, png_const_colorp background,
 {
    if (image != NULL && image->version == PNG_IMAGE_VERSION)
    {
-      png_uint_32 check;
+      /* Check for row_stride overflow.  This check is not performed on the
+       * original PNG format because it may not occur in the output PNG format
+       * and libpng deals with the issues of reading the original.
+       */
+      const unsigned int channels = PNG_IMAGE_PIXEL_CHANNELS(image->format);
 
-      if (row_stride == 0)
-         row_stride = PNG_IMAGE_ROW_STRIDE(*image);
-
-      if (row_stride < 0)
-         check = -row_stride;
-
-      else
-         check = row_stride;
-
-      if (image->opaque != NULL && buffer != NULL &&
-         check >= PNG_IMAGE_ROW_STRIDE(*image))
+      if (image->width <= 0x7FFFFFFFU/channels) /* no overflow */
       {
-         if ((image->format & PNG_FORMAT_FLAG_COLORMAP) == 0 ||
-            (image->colormap_entries > 0 && colormap != NULL))
+         png_uint_32 check;
+         const png_uint_32 png_row_stride = image->width * channels;
+
+         if (row_stride == 0)
+            row_stride = (png_int_32)/*SAFE*/png_row_stride;
+
+         if (row_stride < 0)
+            check = -row_stride;
+
+         else
+            check = row_stride;
+
+         if (image->opaque != NULL && buffer != NULL && check >= png_row_stride)
          {
-            int result;
-            png_image_read_control display;
-
-            memset(&display, 0, (sizeof display));
-            display.image = image;
-            display.buffer = buffer;
-            display.row_stride = row_stride;
-            display.colormap = colormap;
-            display.background = background;
-            display.local_row = NULL;
-
-            /* Choose the correct 'end' routine; for the color-map case all the
-             * setup has already been done.
+            /* Now check for overflow of the image buffer calculation; this
+             * limits the whole image size to 32 bits for API compatibility with
+             * the current, 32-bit, PNG_IMAGE_BUFFER_SIZE macro.
              */
-            if ((image->format & PNG_FORMAT_FLAG_COLORMAP) != 0)
-               result =
-                  png_safe_execute(image, png_image_read_colormap, &display) &&
-                  png_safe_execute(image, png_image_read_colormapped, &display);
+            if (image->height <= 0xFFFFFFFF/png_row_stride)
+            {
+               if ((image->format & PNG_FORMAT_FLAG_COLORMAP) == 0 ||
+                  (image->colormap_entries > 0 && colormap != NULL))
+               {
+                  int result;
+                  png_image_read_control display;
+
+                  memset(&display, 0, (sizeof display));
+                  display.image = image;
+                  display.buffer = buffer;
+                  display.row_stride = row_stride;
+                  display.colormap = colormap;
+                  display.background = background;
+                  display.local_row = NULL;
+
+                  /* Choose the correct 'end' routine; for the color-map case
+                   * all the setup has already been done.
+                   */
+                  if ((image->format & PNG_FORMAT_FLAG_COLORMAP) != 0)
+                     result = png_safe_execute(image,
+                                    png_image_read_colormap, &display) &&
+                              png_safe_execute(image,
+                                    png_image_read_colormapped, &display);
+
+                  else
+                     result =
+                        png_safe_execute(image,
+                              png_image_read_direct, &display);
+
+                  png_image_free(image);
+                  return result;
+               }
+
+               else
+                  return png_image_error(image,
+                     "png_image_finish_read[color-map]: no color-map");
+            }
 
             else
-               result =
-                  png_safe_execute(image, png_image_read_direct, &display);
-
-            png_image_free(image);
-            return result;
+               return png_image_error(image,
+                  "png_image_finish_read: image too large");
          }
 
          else
             return png_image_error(image,
-               "png_image_finish_read[color-map]: no color-map");
+               "png_image_finish_read: invalid argument");
       }
 
       else
          return png_image_error(image,
-            "png_image_finish_read: invalid argument");
+            "png_image_finish_read: row_stride too large");
    }
 
    else if (image != NULL)

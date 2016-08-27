@@ -1,8 +1,8 @@
 
 /* pngrtran.c - transforms the data in a row for PNG readers
  *
- * Last changed in libpng 1.6.19 [November 12, 2015]
- * Copyright (c) 1998-2015 Glenn Randers-Pehrson
+ * Last changed in libpng 1.6.22 [(PENDING RELEASE)]
+ * Copyright (c) 1998-2002,2004,2006-2016 Glenn Randers-Pehrson
  * (Version 0.96 Copyright (c) 1996, 1997 Andreas Dilger)
  * (Version 0.88 Copyright (c) 1995, 1996 Guy Eric Schalnat, Group 42, Inc.)
  *
@@ -99,7 +99,6 @@ png_rtran_ok(png_structrp png_ptr, int need_IHDR)
 {
    if (png_ptr != NULL)
    {
-#ifndef PNG_INDEX_SUPPORTED
       if ((png_ptr->flags & PNG_FLAG_ROW_INIT) != 0)
          png_app_error(png_ptr,
             "invalid after png_start_read_image or png_read_update_info");
@@ -114,9 +113,6 @@ png_rtran_ok(png_structrp png_ptr, int need_IHDR)
 
          return 1; /* Ok */
       }
-#else
-      return 1;
-#endif
    }
 
    return 0; /* no png_error possible! */
@@ -293,9 +289,12 @@ png_set_alpha_mode_fixed(png_structrp png_ptr, int mode,
     * is expected to be 1 or greater, but this range test allows for some
     * viewing correction values.  The intent is to weed out users of this API
     * who use the inverse of the gamma value accidentally!  Since some of these
-    * values are reasonable this may have to be changed.
+    * values are reasonable this may have to be changed:
+    *
+    * 1.6.x: changed from 0.07..3 to 0.01..100 (to accomodate the optimal 16-bit
+    * gamma of 36, and its reciprocal.)
     */
-   if (output_gamma < 70000 || output_gamma > 300000)
+   if (output_gamma < 1000 || output_gamma > 10000000)
       png_error(png_ptr, "output gamma out of expected range");
 
    /* The default file gamma is the inverse of the output gamma; the output

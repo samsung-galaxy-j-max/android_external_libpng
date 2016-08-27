@@ -1,4 +1,4 @@
-Any Android specific modifications to upstream libpng (1.6.20) should
+Any Android specific modifications to upstream libpng (1.6.22beta) should
 be listed here:
 
 (1) Android has added the following files.
@@ -15,5 +15,3 @@ be listed here:
 (3) Removed contrib/testpngs/
     There is no reason to check in all of these files if we won't
     be using them.
-
-(4) PNG_INDEX_SUPPORTED optimizations.
